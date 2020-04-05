@@ -84,7 +84,7 @@ Imagine a scenario when:
 Here the transition between `FROM` and `TO` would start because we still remember that `FROM` element from first screen.
 I thought it's logical to remove elements from `SharedElementsRootState` when they are disposed (`onDispose`) is called. Although I found (mentioned in previous issue, above) that children of `AdapterList` are actually never disposed, we have no idea that the `FROM` element is gone.
 
-Can it be detected somehow? Is there any way to be notified when hierarchy of `SharedElementsRoot` changes so we can traverse all its children to check what's actually gone and whats there?
+Can it be detected somehow? Is there any way to be notified when something in hierarchy of `SharedElementsRoot` changes? I discovered that we can traverse the hierarchy by casting a `Measurable` to `LayoutNode` in `Layout`'s `MeasureBlock` and then traverse the hierarchy using `visitLayoutChildren`. By doing that we should be able to detect what's actually gone and what's there. Unfortunatelly, I believe that `MeasureBlock` is invoked only when direct children of `Layout` changes, and not for every nested change.
 
 ### Types: `FROM` and `TO`
 Currently they can be used interchangeably, which means it doesn't matter if first one if `FROM` or `TO`. They are only used to detect the "other" one from the pair.  
