@@ -51,7 +51,7 @@ SharedElementsRoot {
 See sample usage with `UsersListScreen` and `UserDetailsScreen` [here](sample/src/main/java/com/mobnetic/compose/sharedelement/sample/MainActivity.kt)
 
 # Issues
-### Blinking when going back to `UsersListScreen`
+### Missed "frame" when going back to `UsersListScreen`
 Note: Unfortunatelly it's not that visible on the gif above - you can only see it when going back from Irene.
 
 When going from `UsersListScreen` to `UserDetailsScreen` everything works fine. The sequence is as follows:
