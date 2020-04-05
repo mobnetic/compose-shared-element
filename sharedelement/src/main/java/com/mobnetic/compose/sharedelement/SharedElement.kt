@@ -273,7 +273,7 @@ private sealed class SharedElementTransition(val startElement: PositionedSharedE
                     sequenceOf(it.position, it.scaleX, it.scaleY, it.alpha)
                 }.forEach { key ->
                     key using tween {
-                        duration = 300
+                        duration = 1000
                     }
                 }
             }
