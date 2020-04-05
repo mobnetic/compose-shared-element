@@ -28,7 +28,7 @@ import androidx.ui.unit.PxPosition
 import androidx.ui.unit.height
 import androidx.ui.unit.width
 import com.mobnetic.compose.sharedelement.SharedElementTransition.InProgress
-import com.mobnetic.compose.sharedelement.SharedElementTransition.WaitingForEndElement
+import com.mobnetic.compose.sharedelement.SharedElementTransition.WaitingForEndElementPosition
 
 enum class SharedElementType { FROM, TO }
 
@@ -43,19 +43,15 @@ fun SharedElement(
     val elementInfo = SharedElementInfo(tag, type)
 
     Recompose { recompose ->
-        val rootState = SharedElementsRootStateAmbient.current
-        val elementState = rootState.getElementState(tag)
-        elementState.onElementRegistered(rootState, elementInfo)
+        val elementState = SharedElementsRootStateAmbient.current.getElementState(tag)
+        elementState.onElementRegistered(elementInfo)
 
         Box(
             modifier = modifier.onChildPositioned { coordinates ->
                 elementState.onElementPositioned(
-                    rootState = rootState,
-                    element = PositionedSharedElement(
-                        info = elementInfo,
-                        placeholder = placeholder ?: children,
-                        bounds = rootState.getElementBounds(coordinates)
-                    ),
+                    elementInfo = elementInfo,
+                    placeholder = placeholder ?: children,
+                    coordinates = coordinates,
                     invalidateElement = recompose
                 )
             }.drawLayer(
@@ -85,7 +81,7 @@ private fun SharedElementTransitionsOverlay(rootState: SharedElementsRootState) 
     rootState.invalidateTransitionsOverlay = invalidate
     rootState.elementStates.values.forEach { elementState ->
         when (val transition = elementState.transition) {
-            is WaitingForEndElement -> SharedElementTransitionPlaceholder(
+            is WaitingForEndElementPosition -> SharedElementTransitionPlaceholder(
                 sharedElement = transition.startElement,
                 offsetX = transition.startElement.bounds.left,
                 offsetY = transition.startElement.bounds.top
@@ -155,7 +151,7 @@ private class SharedElementsRootState {
     var invalidateTransitionsOverlay: () -> Unit = {}
     var rootCoordinates: LayoutCoordinates? = null
 
-    fun getElementState(tag: Any): SharedElementState = elementStates.getOrPut(tag) { SharedElementState() }
+    fun getElementState(tag: Any): SharedElementState = elementStates.getOrPut(tag) { SharedElementState(this) }
 
     fun getElementBounds(elementCoordinates: LayoutCoordinates): PxBounds {
         return rootCoordinates?.childBoundingBox(elementCoordinates) ?: elementCoordinates.boundsInRoot
@@ -163,13 +159,14 @@ private class SharedElementsRootState {
 }
 
 private class SharedElementState(
-    private var startElementInfo: SharedElementInfo? = null,
-    private var startElement: PositionedSharedElement? = null,
-    private var endElementInfo: SharedElementInfo? = null
+    private val rootState: SharedElementsRootState
 ) {
+    private var startElementInfo: SharedElementInfo? = null
+    private var startElement: PositionedSharedElement? = null
+    private var endElementInfo: SharedElementInfo? = null
     var transition: SharedElementTransition? = null
 
-    fun onElementRegistered(rootState: SharedElementsRootState, elementInfo: SharedElementInfo) {
+    fun onElementRegistered(elementInfo: SharedElementInfo) {
         if (startElementInfo == null) {
             startElementInfo = elementInfo
             return
@@ -181,24 +178,35 @@ private class SharedElementState(
         if (startElement != null && endElementInfo == null) {
             endElementInfo = elementInfo
             if (transition == null) {
-                transition = WaitingForEndElement(startElement)
+                transition = WaitingForEndElementPosition(startElement)
                 rootState.invalidateTransitionsOverlay()
             }
         }
     }
 
-    fun onElementPositioned(rootState: SharedElementsRootState, element: PositionedSharedElement, invalidateElement: () -> Unit) {
-        if (element.info == startElementInfo) {
+    fun onElementPositioned(
+        elementInfo: SharedElementInfo,
+        placeholder: @Composable() () -> Unit,
+        coordinates: LayoutCoordinates,
+        invalidateElement: () -> Unit
+    ) {
+        val element = PositionedSharedElement(
+            info = elementInfo,
+            placeholder = placeholder,
+            bounds = rootState.getElementBounds(coordinates)
+        )
+
+        if (elementInfo == startElementInfo) {
             startElement = element
             return
         }
 
         val startElement = startElement
-        if (startElement != null && element.info == endElementInfo) {
+        if (startElement != null && elementInfo == endElementInfo) {
             this.startElementInfo = element.info
             this.startElement = element
             this.endElementInfo = null
-            if (transition is WaitingForEndElement) {
+            if (transition is WaitingForEndElementPosition) {
                 transition = InProgress(startElement, element, onTransitionFinished = {
                     transition = null
                     invalidateElement.invoke()
@@ -222,7 +230,7 @@ private data class SharedElementInfo(val tag: Any, val type: SharedElementType)
 
 private sealed class SharedElementTransition(val startElement: PositionedSharedElement) {
 
-    class WaitingForEndElement(startElement: PositionedSharedElement) : SharedElementTransition(startElement)
+    class WaitingForEndElementPosition(startElement: PositionedSharedElement) : SharedElementTransition(startElement)
 
     class InProgress(
         startElement: PositionedSharedElement,
