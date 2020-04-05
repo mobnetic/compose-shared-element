@@ -52,6 +52,8 @@ See sample usage with `UsersListScreen` and `UserDetailsScreen` [here](sample/sr
 
 # Issues
 ### Blinking when going back to `UsersListScreen`
+Note: Unfortunatelly it's not that visible on the gif above - you can only see it when going back from Irene.
+
 When going from `UsersListScreen` to `UserDetailsScreen` everything works fine. The sequence is as follows:
 1. `startElement` from previous screen is gone
 2. `endElement` calls `onElementRegistered` and hides itself (by using `alpha = 0`)
