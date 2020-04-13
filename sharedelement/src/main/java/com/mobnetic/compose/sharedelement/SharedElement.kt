@@ -1,5 +1,7 @@
 package com.mobnetic.compose.sharedelement
 
+import android.os.Handler
+import android.os.Looper
 import androidx.animation.FloatPropKey
 import androidx.animation.TransitionState
 import androidx.animation.transitionDefinition
@@ -7,8 +9,10 @@ import androidx.compose.Composable
 import androidx.compose.Providers
 import androidx.compose.Recompose
 import androidx.compose.invalidate
+import androidx.compose.onDispose
 import androidx.compose.remember
 import androidx.compose.staticAmbientOf
+import androidx.core.os.postDelayed
 import androidx.ui.animation.PxPositionPropKey
 import androidx.ui.animation.Transition
 import androidx.ui.core.DensityAmbient
@@ -62,6 +66,10 @@ fun SharedElement(
             }.plus(visibilityModifier),
             children = children
         )
+
+        onDispose {
+            tracker.onElementDisposed(elementInfo)
+        }
     }
 }
 
@@ -76,6 +84,10 @@ fun SharedElementsRoot(children: @Composable() () -> Unit) {
             children()
         }
         SharedElementTransitionsOverlay(rootState)
+    }
+
+    onDispose {
+        rootState.onDisposed()
     }
 }
 
@@ -152,6 +164,7 @@ private val SharedElementsRootStateAmbient = staticAmbientOf<SharedElementsRootS
 }
 
 private class SharedElementsRootState {
+    val handler = Handler(Looper.getMainLooper())
     val trackers = mutableMapOf<SharedElementTag, SharedElementsTracker>()
     var invalidateTransitionsOverlay: () -> Unit = {}
     var rootCoordinates: LayoutCoordinates? = null
@@ -163,6 +176,10 @@ private class SharedElementsRootState {
     fun calculateElementBoundsInRoot(elementCoordinates: LayoutCoordinates): PxBounds {
         return rootCoordinates?.childBoundingBox(elementCoordinates) ?: elementCoordinates.boundsInRoot
     }
+
+    fun onDisposed() {
+        handler.removeCallbacksAndMessages(null)
+    }
 }
 
 private class SharedElementsTracker(
@@ -173,6 +190,8 @@ private class SharedElementsTracker(
         class StartElementRegistered(val startElementInfo: SharedElementInfo) : State()
         data class StartElementPositioned(val startElement: PositionedSharedElement, val endElementInfo: SharedElementInfo? = null) : State()
     }
+
+    private val onDisposedRunnableToken: Any = this
 
     private var state: State = Empty
 
@@ -192,11 +211,13 @@ private class SharedElementsTracker(
             }
             is StartElementRegistered -> {
                 if (elementInfo != state.startElementInfo) {
+                    rootState.handler.removeCallbacksAndMessages(onDisposedRunnableToken)
                     this.state = StartElementRegistered(startElementInfo = elementInfo)
                 }
             }
             is StartElementPositioned -> {
                 if (elementInfo != state.startElement.info && elementInfo != state.endElementInfo) {
+                    rootState.handler.removeCallbacksAndMessages(onDisposedRunnableToken)
                     this.state = state.copy(endElementInfo = elementInfo)
                     transition = WaitingForEndElementPosition(state.startElement)
                 }
@@ -227,7 +248,7 @@ private class SharedElementsTracker(
                     val startElement = state.startElement
                     this.state = StartElementPositioned(startElement = element)
                     transition = InProgress(startElement = startElement, endElement = element, onTransitionFinished = {
-                        this.transition = null
+                        transition = null
                         invalidateElement.invoke()
                     })
                 } else if (element.info == state.startElement.info) {
@@ -235,6 +256,32 @@ private class SharedElementsTracker(
                 }
             }
         }
+    }
+
+    fun onElementDisposed(elementInfo: SharedElementInfo) {
+        rootState.handler.postDelayed(0L, onDisposedRunnableToken) {
+            when (val state = state) {
+                is StartElementRegistered -> {
+                    if (elementInfo == state.startElementInfo) {
+                        resetStateToEmpty(elementInfo.tag)
+                    }
+                }
+                is StartElementPositioned -> {
+                    if (elementInfo == state.startElement.info) {
+                        resetStateToEmpty(elementInfo.tag)
+                    } else if (elementInfo == state.endElementInfo) {
+                        this.state = StartElementPositioned(startElement = state.startElement)
+                        transition = null
+                    }
+                }
+            }
+        }
+    }
+
+    private fun resetStateToEmpty(tag: SharedElementTag) {
+        rootState.trackers.remove(tag)
+        state = Empty
+        transition = null
     }
 }
 
