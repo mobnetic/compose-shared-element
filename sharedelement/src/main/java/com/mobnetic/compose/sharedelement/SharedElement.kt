@@ -1,7 +1,6 @@
 package com.mobnetic.compose.sharedelement
 
-import android.os.Handler
-import android.os.Looper
+import android.view.Choreographer
 import androidx.animation.FloatPropKey
 import androidx.animation.TransitionState
 import androidx.animation.transitionDefinition
@@ -12,7 +11,6 @@ import androidx.compose.invalidate
 import androidx.compose.onDispose
 import androidx.compose.remember
 import androidx.compose.staticAmbientOf
-import androidx.core.os.postDelayed
 import androidx.ui.animation.PxPositionPropKey
 import androidx.ui.animation.Transition
 import androidx.ui.core.DensityAmbient
@@ -34,6 +32,7 @@ import androidx.ui.unit.width
 import com.mobnetic.compose.sharedelement.SharedElementTransition.InProgress
 import com.mobnetic.compose.sharedelement.SharedElementTransition.WaitingForEndElementPosition
 import com.mobnetic.compose.sharedelement.SharedElementsTracker.State.Empty
+import com.mobnetic.compose.sharedelement.SharedElementsTracker.State.EndElementRegistered
 import com.mobnetic.compose.sharedelement.SharedElementsTracker.State.StartElementPositioned
 import com.mobnetic.compose.sharedelement.SharedElementsTracker.State.StartElementRegistered
 import kotlin.properties.Delegates
@@ -49,15 +48,15 @@ fun SharedElement(
     children: @Composable() () -> Unit
 ) {
     val elementInfo = SharedElementInfo(tag, type)
+    val rootState = SharedElementsRootStateAmbient.current
+
+    rootState.onElementRegistered(elementInfo)
 
     Recompose { recompose ->
-        val tracker = SharedElementsRootStateAmbient.current.getTracker(tag)
-        tracker.onElementRegistered(elementInfo)
-
-        val visibilityModifier = if (tracker.shouldHideElement) Modifier.drawLayer(alpha = 0f) else Modifier.None
+        val visibilityModifier = if (rootState.shouldHideElement(elementInfo)) Modifier.drawLayer(alpha = 0f) else Modifier.None
         Box(
             modifier = modifier.onChildPositioned { coordinates ->
-                tracker.onElementPositioned(
+                rootState.onElementPositioned(
                     elementInfo = elementInfo,
                     placeholder = placeholder ?: children,
                     coordinates = coordinates,
@@ -66,10 +65,10 @@ fun SharedElement(
             }.plus(visibilityModifier),
             children = children
         )
+    }
 
-        onDispose {
-            tracker.onElementDisposed(elementInfo)
-        }
+    onDispose {
+        rootState.onElementDisposed(elementInfo)
     }
 }
 
@@ -164,65 +163,18 @@ private val SharedElementsRootStateAmbient = staticAmbientOf<SharedElementsRootS
 }
 
 private class SharedElementsRootState {
-    val handler = Handler(Looper.getMainLooper())
+    private val choreographer = ChoreographerWrapper()
     val trackers = mutableMapOf<SharedElementTag, SharedElementsTracker>()
     var invalidateTransitionsOverlay: () -> Unit = {}
     var rootCoordinates: LayoutCoordinates? = null
 
-    fun getTracker(tag: SharedElementTag): SharedElementsTracker {
-        return trackers.getOrPut(tag) { SharedElementsTracker(this) }
+    fun shouldHideElement(elementInfo: SharedElementInfo): Boolean {
+        return getTracker(elementInfo).shouldHideElement
     }
-
-    fun calculateElementBoundsInRoot(elementCoordinates: LayoutCoordinates): PxBounds {
-        return rootCoordinates?.childBoundingBox(elementCoordinates) ?: elementCoordinates.boundsInRoot
-    }
-
-    fun onDisposed() {
-        handler.removeCallbacksAndMessages(null)
-    }
-}
-
-private class SharedElementsTracker(
-    private val rootState: SharedElementsRootState
-) {
-    private sealed class State {
-        object Empty : State()
-        class StartElementRegistered(val startElementInfo: SharedElementInfo) : State()
-        data class StartElementPositioned(val startElement: PositionedSharedElement, val endElementInfo: SharedElementInfo? = null) : State()
-    }
-
-    private val onDisposedRunnableToken: Any = this
-
-    private var state: State = Empty
-
-    var transition by Delegates.observable<SharedElementTransition?>(null) { _, oldValue, newValue ->
-        if (oldValue != newValue) {
-            (oldValue as? InProgress)?.cleanup()
-            rootState.invalidateTransitionsOverlay()
-        }
-    }
-
-    val shouldHideElement: Boolean get() = transition != null
 
     fun onElementRegistered(elementInfo: SharedElementInfo) {
-        when (val state = state) {
-            is Empty -> {
-                this.state = StartElementRegistered(startElementInfo = elementInfo)
-            }
-            is StartElementRegistered -> {
-                if (elementInfo != state.startElementInfo) {
-                    rootState.handler.removeCallbacksAndMessages(onDisposedRunnableToken)
-                    this.state = StartElementRegistered(startElementInfo = elementInfo)
-                }
-            }
-            is StartElementPositioned -> {
-                if (elementInfo != state.startElement.info && elementInfo != state.endElementInfo) {
-                    rootState.handler.removeCallbacksAndMessages(onDisposedRunnableToken)
-                    this.state = state.copy(endElementInfo = elementInfo)
-                    transition = WaitingForEndElementPosition(state.startElement)
-                }
-            }
-        }
+        choreographer.removeCallback(elementInfo)
+        getTracker(elementInfo).onElementRegistered(elementInfo)
     }
 
     fun onElementPositioned(
@@ -234,54 +186,127 @@ private class SharedElementsTracker(
         val element = PositionedSharedElement(
             info = elementInfo,
             placeholder = placeholder,
-            bounds = rootState.calculateElementBoundsInRoot(coordinates)
+            bounds = calculateElementBoundsInRoot(coordinates)
         )
+        getTracker(elementInfo).onElementPositioned(element, invalidateElement)
+    }
 
+    fun onElementDisposed(elementInfo: SharedElementInfo) {
+        choreographer.postCallback(elementInfo) {
+            val tracker = getTracker(elementInfo)
+            tracker.onElementUnregistered(elementInfo)
+            if (tracker.isEmpty) trackers.remove(elementInfo.tag)
+        }
+    }
+
+    fun onDisposed() {
+        choreographer.clear()
+    }
+
+    private fun getTracker(elementInfo: SharedElementInfo): SharedElementsTracker {
+        return trackers.getOrPut(elementInfo.tag) {
+            SharedElementsTracker(onTransitionChanged = { invalidateTransitionsOverlay() })
+        }
+    }
+
+    private fun calculateElementBoundsInRoot(elementCoordinates: LayoutCoordinates): PxBounds {
+        return rootCoordinates?.childBoundingBox(elementCoordinates) ?: elementCoordinates.boundsInRoot
+    }
+}
+
+private class SharedElementsTracker(
+    private val onTransitionChanged: () -> Unit
+) {
+    private var state: State = Empty
+
+    var transition by Delegates.observable<SharedElementTransition?>(null) { _, oldValue, newValue ->
+        if (oldValue != newValue) {
+            (oldValue as? InProgress)?.cleanup()
+            onTransitionChanged()
+        }
+    }
+
+    val isEmpty: Boolean get() = state is Empty
+
+    val shouldHideElement: Boolean get() = transition != null
+
+    fun onElementRegistered(elementInfo: SharedElementInfo) {
         when (val state = state) {
+            is StartElementPositioned -> {
+                if (!state.isRegistered(elementInfo)) {
+                    this.state = EndElementRegistered(startElement = state.startElement, endElementInfo = elementInfo)
+                    transition = WaitingForEndElementPosition(state.startElement)
+                }
+            }
+            is StartElementRegistered -> {
+                if (elementInfo != state.startElementInfo) {
+                    this.state = StartElementRegistered(startElementInfo = elementInfo)
+                }
+            }
+            is Empty -> {
+                this.state = StartElementRegistered(startElementInfo = elementInfo)
+            }
+        }
+    }
+
+    fun onElementPositioned(element: PositionedSharedElement, invalidateElement: () -> Unit) {
+        when (val state = state) {
+            is EndElementRegistered -> {
+                if (element.info == state.endElementInfo) {
+                    this.state = StartElementPositioned(startElement = element)
+                    transition = InProgress(startElement = state.startElement, endElement = element, onTransitionFinished = {
+                        transition = null
+                        invalidateElement()
+                    })
+                } else if (element.info == state.startElementInfo) {
+                    this.state = EndElementRegistered(startElement = element, endElementInfo = state.endElementInfo)
+                    transition = WaitingForEndElementPosition(startElement = element)
+                }
+            }
             is StartElementRegistered -> {
                 if (element.info == state.startElementInfo) {
                     this.state = StartElementPositioned(startElement = element)
                 }
             }
-            is StartElementPositioned -> {
-                if (element.info == state.endElementInfo) {
-                    val startElement = state.startElement
-                    this.state = StartElementPositioned(startElement = element)
-                    transition = InProgress(startElement = startElement, endElement = element, onTransitionFinished = {
-                        transition = null
-                        invalidateElement.invoke()
-                    })
-                } else if (element.info == state.startElement.info) {
-                    this.state = state.copy(startElement = element)
+        }
+    }
+
+    fun onElementUnregistered(elementInfo: SharedElementInfo) {
+        when (val state = state) {
+            is EndElementRegistered -> {
+                if (elementInfo == state.endElementInfo) {
+                    this.state = StartElementPositioned(startElement = state.startElement)
+                    transition = null
+                } else if (elementInfo == state.startElement.info) {
+                    this.state = StartElementRegistered(startElementInfo = state.endElementInfo)
+                    transition = null
+                }
+            }
+            is StartElementRegistered -> {
+                if (elementInfo == state.startElementInfo) {
+                    this.state = Empty
+                    transition = null
                 }
             }
         }
     }
 
-    fun onElementDisposed(elementInfo: SharedElementInfo) {
-        rootState.handler.postDelayed(0L, onDisposedRunnableToken) {
-            when (val state = state) {
-                is StartElementRegistered -> {
-                    if (elementInfo == state.startElementInfo) {
-                        resetStateToEmpty(elementInfo.tag)
-                    }
-                }
-                is StartElementPositioned -> {
-                    if (elementInfo == state.startElement.info) {
-                        resetStateToEmpty(elementInfo.tag)
-                    } else if (elementInfo == state.endElementInfo) {
-                        this.state = StartElementPositioned(startElement = state.startElement)
-                        transition = null
-                    }
-                }
+    private sealed class State {
+        object Empty : State()
+
+        open class StartElementRegistered(val startElementInfo: SharedElementInfo) : State() {
+            open fun isRegistered(elementInfo: SharedElementInfo): Boolean {
+                return elementInfo == startElementInfo
             }
         }
-    }
 
-    private fun resetStateToEmpty(tag: SharedElementTag) {
-        rootState.trackers.remove(tag)
-        state = Empty
-        transition = null
+        open class StartElementPositioned(open val startElement: PositionedSharedElement) : StartElementRegistered(startElement.info)
+
+        class EndElementRegistered(override val startElement: PositionedSharedElement, val endElementInfo: SharedElementInfo) : StartElementPositioned(startElement) {
+            override fun isRegistered(elementInfo: SharedElementInfo): Boolean {
+                return super.isRegistered(elementInfo) || elementInfo == endElementInfo
+            }
+        }
     }
 }
 
@@ -360,5 +385,30 @@ private sealed class SharedElementTransition(val startElement: PositionedSharedE
             val scaleY = FloatPropKey()
             val alpha = FloatPropKey()
         }
+    }
+}
+
+private class ChoreographerWrapper {
+    private val callbacks = mutableMapOf<SharedElementInfo, Choreographer.FrameCallback>()
+    private val choreographer = Choreographer.getInstance()
+
+    fun postCallback(elementInfo: SharedElementInfo, callback: () -> Unit) {
+        if (callbacks.containsKey(elementInfo)) return
+
+        val frameCallback = Choreographer.FrameCallback {
+            callbacks.remove(elementInfo)
+            callback()
+        }
+        callbacks[elementInfo] = frameCallback
+        choreographer.postFrameCallback(frameCallback)
+    }
+
+    fun removeCallback(elementInfo: SharedElementInfo) {
+        callbacks.remove(elementInfo)?.also(choreographer::removeFrameCallback)
+    }
+
+    fun clear() {
+        callbacks.values.forEach(choreographer::removeFrameCallback)
+        callbacks.clear()
     }
 }
