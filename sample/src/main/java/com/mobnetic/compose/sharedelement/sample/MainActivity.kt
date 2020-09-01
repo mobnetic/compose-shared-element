@@ -3,24 +3,26 @@ package com.mobnetic.compose.sharedelement.sample
 import android.os.Bundle
 import androidx.annotation.DrawableRes
 import androidx.appcompat.app.AppCompatActivity
-import androidx.compose.Composable
-import androidx.compose.Model
-import androidx.ui.core.Modifier
-import androidx.ui.core.setContent
-import androidx.ui.foundation.AdapterList
-import androidx.ui.foundation.Clickable
-import androidx.ui.foundation.Image
-import androidx.ui.foundation.Text
-import androidx.ui.graphics.ScaleFit
-import androidx.ui.layout.Arrangement
-import androidx.ui.layout.Column
-import androidx.ui.layout.ColumnAlign
-import androidx.ui.layout.fillMaxSize
-import androidx.ui.layout.preferredSize
-import androidx.ui.material.ListItem
-import androidx.ui.material.MaterialTheme
-import androidx.ui.res.vectorResource
-import androidx.ui.unit.dp
+import androidx.compose.foundation.Box
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.Text
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.preferredSize
+import androidx.compose.foundation.lazy.LazyColumnFor
+import androidx.compose.material.ListItem
+import androidx.compose.material.MaterialTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.setContent
+import androidx.compose.ui.res.vectorResource
+import androidx.compose.ui.unit.dp
 import com.mobnetic.compose.sharedelement.SharedElement
 import com.mobnetic.compose.sharedelement.SharedElementType
 import com.mobnetic.compose.sharedelement.SharedElementsRoot
@@ -31,7 +33,7 @@ class MainActivity : AppCompatActivity() {
         setContent {
             MaterialTheme {
                 SharedElementsRoot {
-                    when (val selectedUser = viewModel.selectedUser) {
+                    when (val selectedUser = viewModel.selectedUser.value) {
                         null -> UsersListScreen()
                         else -> UserDetailsScreen(selectedUser)
                     }
@@ -41,29 +43,29 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() {
-        if (viewModel.selectedUser != null) {
-            viewModel.selectedUser = null
+        if (viewModel.selectedUser.value != null) {
+            viewModel.selectedUser.value = null
         } else {
             super.onBackPressed()
         }
     }
 }
 
-@Model
-class ViewModel(var selectedUser: User? = null)
+class ViewModel(var selectedUser: MutableState<User?> = mutableStateOf(null))
 
 val viewModel = ViewModel()
 
 @Composable
 fun UsersListScreen() {
-    AdapterList(data = users) { user ->
+    LazyColumnFor(users) { user ->
         ListItem(
+            modifier = Modifier.clickable(onClick = { viewModel.selectedUser.value = user }),
             icon = {
                 SharedElement(tag = user, type = SharedElementType.FROM) {
                     Image(
                         asset = vectorResource(id = user.avatar),
                         modifier = Modifier.preferredSize(48.dp),
-                        scaleFit = ScaleFit.FillMaxDimension
+                        contentScale = ContentScale.Fit
                     )
                 }
             },
@@ -71,31 +73,30 @@ fun UsersListScreen() {
                 SharedElement(tag = user to user.name, type = SharedElementType.FROM) {
                     Text(text = user.name)
                 }
-            },
-            onClick = { viewModel.selectedUser = user }
+            }
         )
     }
 }
 
 @Composable
 fun UserDetailsScreen(user: User) {
-    Column(modifier = Modifier.fillMaxSize(), arrangement = Arrangement.Center) {
-        Clickable(
-            onClick = { viewModel.selectedUser = null },
-            modifier = Modifier.preferredSize(200.dp).gravity(ColumnAlign.Center)
+    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
+        Box(modifier = Modifier.preferredSize(200.dp)
+            .gravity(Alignment.CenterHorizontally)
+            .clickable(onClick = { viewModel.selectedUser.value = null })
         ) {
             SharedElement(tag = user, type = SharedElementType.TO) {
                 Image(
                     asset = vectorResource(id = user.avatar),
                     modifier = Modifier.fillMaxSize(),
-                    scaleFit = ScaleFit.FillMaxDimension
+                    contentScale = ContentScale.Fit
                 )
             }
         }
         SharedElement(
             tag = user to user.name,
             type = SharedElementType.TO,
-            modifier = Modifier.gravity(ColumnAlign.Center)
+            modifier = Modifier.gravity(Alignment.CenterHorizontally)
         ) {
             Text(text = user.name, style = MaterialTheme.typography.h1)
         }

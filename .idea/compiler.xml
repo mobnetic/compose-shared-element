@@ -1,9 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="CompilerConfiguration">
-    <bytecodeTargetLevel>
-      <module name="compose-shared-element.sample" target="1.8" />
-      <module name="compose-shared-element.sharedelement" target="1.8" />
+    <bytecodeTargetLevel target="11">
       <module name="ComposeSharedElement.app" target="1.8" />
       <module name="ComposeSharedElement.sample" target="1.8" />
       <module name="ComposeSharedElement.sharedelement" target="1.8" />

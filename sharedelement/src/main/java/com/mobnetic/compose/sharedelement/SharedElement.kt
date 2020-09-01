@@ -1,40 +1,29 @@
 package com.mobnetic.compose.sharedelement
 
 import android.view.Choreographer
-import androidx.animation.FloatPropKey
-import androidx.animation.TransitionState
-import androidx.animation.transitionDefinition
-import androidx.compose.Composable
-import androidx.compose.Providers
-import androidx.compose.Recompose
-import androidx.compose.invalidate
-import androidx.compose.onDispose
-import androidx.compose.remember
-import androidx.compose.staticAmbientOf
-import androidx.ui.animation.PxPositionPropKey
-import androidx.ui.animation.Transition
-import androidx.ui.core.DensityAmbient
-import androidx.ui.core.LayoutCoordinates
-import androidx.ui.core.Modifier
-import androidx.ui.core.boundsInRoot
-import androidx.ui.core.drawLayer
-import androidx.ui.core.onChildPositioned
-import androidx.ui.core.onPositioned
-import androidx.ui.foundation.Box
-import androidx.ui.layout.Stack
-import androidx.ui.layout.offset
-import androidx.ui.layout.preferredSize
-import androidx.ui.unit.Px
-import androidx.ui.unit.PxBounds
-import androidx.ui.unit.PxPosition
-import androidx.ui.unit.height
-import androidx.ui.unit.width
+import androidx.compose.animation.OffsetPropKey
+import androidx.compose.animation.core.FloatPropKey
+import androidx.compose.animation.core.TransitionState
+import androidx.compose.animation.core.transitionDefinition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.transition
+import androidx.compose.foundation.Box
+import androidx.compose.foundation.layout.Stack
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.preferredSize
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.drawLayer
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.onPositioned
+import androidx.compose.ui.platform.DensityAmbient
 import com.mobnetic.compose.sharedelement.SharedElementTransition.InProgress
 import com.mobnetic.compose.sharedelement.SharedElementTransition.WaitingForEndElementPosition
-import com.mobnetic.compose.sharedelement.SharedElementsTracker.State.Empty
-import com.mobnetic.compose.sharedelement.SharedElementsTracker.State.EndElementRegistered
-import com.mobnetic.compose.sharedelement.SharedElementsTracker.State.StartElementPositioned
-import com.mobnetic.compose.sharedelement.SharedElementsTracker.State.StartElementRegistered
+import com.mobnetic.compose.sharedelement.SharedElementsTracker.State.*
+import kotlin.collections.set
 import kotlin.properties.Delegates
 
 enum class SharedElementType { FROM, TO }
@@ -43,28 +32,29 @@ enum class SharedElementType { FROM, TO }
 fun SharedElement(
     tag: Any,
     type: SharedElementType,
-    modifier: Modifier = Modifier.None,
+    modifier: Modifier = Modifier,
     placeholder: @Composable (() -> Unit)? = null,
-    children: @Composable() () -> Unit
+    children: @Composable () -> Unit
 ) {
     val elementInfo = SharedElementInfo(tag, type)
     val rootState = SharedElementsRootStateAmbient.current
 
     rootState.onElementRegistered(elementInfo)
 
-    Recompose { recompose ->
-        val visibilityModifier = if (rootState.shouldHideElement(elementInfo)) Modifier.drawLayer(alpha = 0f) else Modifier.None
-        Box(
-            modifier = modifier.onChildPositioned { coordinates ->
-                rootState.onElementPositioned(
-                    elementInfo = elementInfo,
-                    placeholder = placeholder ?: children,
-                    coordinates = coordinates,
-                    invalidateElement = recompose
-                )
-            }.plus(visibilityModifier),
-            children = children
-        )
+    val recompose = invalidate
+    val visibilityModifier =
+        if (rootState.shouldHideElement(elementInfo)) Modifier.drawLayer(alpha = 0f) else Modifier
+    Box(modifier = modifier.then(visibilityModifier)) {
+        Box(modifier = Modifier.onPositioned { coordinates ->
+            rootState.onElementPositioned(
+                elementInfo = elementInfo,
+                placeholder = placeholder ?: children,
+                coordinates = coordinates,
+                invalidateElement = recompose
+            )
+        }) {
+            children()
+        }
     }
 
     onDispose {
@@ -73,7 +63,7 @@ fun SharedElement(
 }
 
 @Composable
-fun SharedElementsRoot(children: @Composable() () -> Unit) {
+fun SharedElementsRoot(children: @Composable () -> Unit) {
     val rootState = remember { SharedElementsRootState() }
 
     Stack(modifier = Modifier.onPositioned { layoutCoordinates ->
@@ -100,16 +90,17 @@ private fun SharedElementTransitionsOverlay(rootState: SharedElementsRootState) 
                 offsetX = transition.startElement.bounds.left,
                 offsetY = transition.startElement.bounds.top
             )
-            is InProgress -> Transition(
-                definition = transition.transitionDefinition,
-                initState = InProgress.State.START,
-                toState = InProgress.State.END,
-                onStateChangeFinished = { state ->
-                    if (state == InProgress.State.END) {
-                        transition.onTransitionFinished()
+            is InProgress -> {
+                val transitionState = transition(definition = transition.transitionDefinition,
+                    toState = InProgress.State.END,
+                    initState = InProgress.State.START,
+                    label = null, onStateChangeFinished = { state ->
+                        if (state == InProgress.State.END) {
+                            transition.onTransitionFinished()
+                        }
                     }
-                }
-            ) { transitionState ->
+                )
+
                 SharedElementTransitionPlaceholder(
                     sharedElement = transition.startElement,
                     transitionState = transitionState,
@@ -126,7 +117,11 @@ private fun SharedElementTransitionsOverlay(rootState: SharedElementsRootState) 
 }
 
 @Composable
-private fun SharedElementTransitionPlaceholder(sharedElement: PositionedSharedElement, transitionState: TransitionState, propKeys: InProgress.SharedElementPropKeys) {
+private fun SharedElementTransitionPlaceholder(
+    sharedElement: PositionedSharedElement,
+    transitionState: TransitionState,
+    propKeys: InProgress.SharedElementPropKeys
+) {
     SharedElementTransitionPlaceholder(
         sharedElement = sharedElement,
         offsetX = transitionState[propKeys.position].x,
@@ -138,7 +133,14 @@ private fun SharedElementTransitionPlaceholder(sharedElement: PositionedSharedEl
 }
 
 @Composable
-private fun SharedElementTransitionPlaceholder(sharedElement: PositionedSharedElement, offsetX: Px, offsetY: Px, scaleX: Float = 1f, scaleY: Float = 1f, alpha: Float = 1f) {
+private fun SharedElementTransitionPlaceholder(
+    sharedElement: PositionedSharedElement,
+    offsetX: Float,
+    offsetY: Float,
+    scaleX: Float = 1f,
+    scaleY: Float = 1f,
+    alpha: Float = 1f
+) {
     with(DensityAmbient.current) {
         Box(
             modifier = Modifier.preferredSize(
@@ -148,7 +150,7 @@ private fun SharedElementTransitionPlaceholder(sharedElement: PositionedSharedEl
                 x = offsetX.toDp(),
                 y = offsetY.toDp()
             ).drawLayer(
-//                elevation = Float.MAX_VALUE, // TODO: re-enable in future? Depending on https://issuetracker.google.com/issues/153173354
+//                elevation = Float.MAX_VALUE,
                 scaleX = scaleX,
                 scaleY = scaleY,
                 alpha = alpha
@@ -179,7 +181,7 @@ private class SharedElementsRootState {
 
     fun onElementPositioned(
         elementInfo: SharedElementInfo,
-        placeholder: @Composable() () -> Unit,
+        placeholder: @Composable () -> Unit,
         coordinates: LayoutCoordinates,
         invalidateElement: () -> Unit
     ) {
@@ -209,8 +211,9 @@ private class SharedElementsRootState {
         }
     }
 
-    private fun calculateElementBoundsInRoot(elementCoordinates: LayoutCoordinates): PxBounds {
-        return rootCoordinates?.childBoundingBox(elementCoordinates) ?: elementCoordinates.boundsInRoot
+    private fun calculateElementBoundsInRoot(elementCoordinates: LayoutCoordinates): Rect {
+        return rootCoordinates?.childBoundingBox(elementCoordinates)
+            ?: elementCoordinates.boundsInRoot
     }
 }
 
@@ -234,7 +237,10 @@ private class SharedElementsTracker(
         when (val state = state) {
             is StartElementPositioned -> {
                 if (!state.isRegistered(elementInfo)) {
-                    this.state = EndElementRegistered(startElement = state.startElement, endElementInfo = elementInfo)
+                    this.state = EndElementRegistered(
+                        startElement = state.startElement,
+                        endElementInfo = elementInfo
+                    )
                     transition = WaitingForEndElementPosition(state.startElement)
                 }
             }
@@ -254,12 +260,18 @@ private class SharedElementsTracker(
             is EndElementRegistered -> {
                 if (element.info == state.endElementInfo) {
                     this.state = StartElementPositioned(startElement = element)
-                    transition = InProgress(startElement = state.startElement, endElement = element, onTransitionFinished = {
-                        transition = null
-                        invalidateElement()
-                    })
+                    transition = InProgress(
+                        startElement = state.startElement,
+                        endElement = element,
+                        onTransitionFinished = {
+                            transition = null
+                            invalidateElement()
+                        })
                 } else if (element.info == state.startElementInfo) {
-                    this.state = EndElementRegistered(startElement = element, endElementInfo = state.endElementInfo)
+                    this.state = EndElementRegistered(
+                        startElement = element,
+                        endElementInfo = state.endElementInfo
+                    )
                     transition = WaitingForEndElementPosition(startElement = element)
                 }
             }
@@ -300,9 +312,13 @@ private class SharedElementsTracker(
             }
         }
 
-        open class StartElementPositioned(open val startElement: PositionedSharedElement) : StartElementRegistered(startElement.info)
+        open class StartElementPositioned(open val startElement: PositionedSharedElement) :
+            StartElementRegistered(startElement.info)
 
-        class EndElementRegistered(override val startElement: PositionedSharedElement, val endElementInfo: SharedElementInfo) : StartElementPositioned(startElement) {
+        class EndElementRegistered(
+            override val startElement: PositionedSharedElement,
+            val endElementInfo: SharedElementInfo
+        ) : StartElementPositioned(startElement) {
             override fun isRegistered(elementInfo: SharedElementInfo): Boolean {
                 return super.isRegistered(elementInfo) || elementInfo == endElementInfo
             }
@@ -317,12 +333,13 @@ private data class SharedElementInfo(val tag: SharedElementTag, val type: Shared
 private class PositionedSharedElement(
     val info: SharedElementInfo,
     val placeholder: @Composable() () -> Unit,
-    val bounds: PxBounds
+    val bounds: Rect
 )
 
 private sealed class SharedElementTransition(val startElement: PositionedSharedElement) {
 
-    class WaitingForEndElementPosition(startElement: PositionedSharedElement) : SharedElementTransition(startElement)
+    class WaitingForEndElementPosition(startElement: PositionedSharedElement) :
+        SharedElementTransition(startElement)
 
     class InProgress(
         startElement: PositionedSharedElement,
@@ -333,29 +350,35 @@ private sealed class SharedElementTransition(val startElement: PositionedSharedE
         val startElementPropKeys = SharedElementPropKeys()
         val endElementPropKeys = SharedElementPropKeys()
 
-        val transitionDefinition = transitionDefinition {
+        val transitionDefinition = transitionDefinition<State> {
             state(State.START) {
-                this[startElementPropKeys.position] = PxPosition(startElement.bounds.left, startElement.bounds.top)
+                this[startElementPropKeys.position] =
+                    Offset(startElement.bounds.left, startElement.bounds.top)
                 this[startElementPropKeys.scaleX] = 1f
                 this[startElementPropKeys.scaleY] = 1f
                 this[startElementPropKeys.alpha] = 1f
-                this[endElementPropKeys.position] = PxPosition(
+                this[endElementPropKeys.position] = Offset(
                     x = startElement.bounds.left + (startElement.bounds.width - endElement.bounds.width) / 2f,
                     y = startElement.bounds.top + (startElement.bounds.height - endElement.bounds.height) / 2f
                 )
-                this[endElementPropKeys.scaleX] = startElement.bounds.width / endElement.bounds.width
-                this[endElementPropKeys.scaleY] = startElement.bounds.height / endElement.bounds.height
+                this[endElementPropKeys.scaleX] =
+                    startElement.bounds.width / endElement.bounds.width
+                this[endElementPropKeys.scaleY] =
+                    startElement.bounds.height / endElement.bounds.height
                 this[endElementPropKeys.alpha] = 0f
             }
             state(State.END) {
-                this[startElementPropKeys.position] = PxPosition(
+                this[startElementPropKeys.position] = Offset(
                     x = endElement.bounds.left + (endElement.bounds.width - startElement.bounds.width) / 2f,
                     y = endElement.bounds.top + (endElement.bounds.height - startElement.bounds.height) / 2f
                 )
-                this[startElementPropKeys.scaleX] = endElement.bounds.width / startElement.bounds.width
-                this[startElementPropKeys.scaleY] = endElement.bounds.height / startElement.bounds.height
+                this[startElementPropKeys.scaleX] =
+                    endElement.bounds.width / startElement.bounds.width
+                this[startElementPropKeys.scaleY] =
+                    endElement.bounds.height / startElement.bounds.height
                 this[startElementPropKeys.alpha] = 0f
-                this[endElementPropKeys.position] = PxPosition(endElement.bounds.left, endElement.bounds.top)
+                this[endElementPropKeys.position] =
+                    Offset(endElement.bounds.left, endElement.bounds.top)
                 this[endElementPropKeys.scaleX] = 1f
                 this[endElementPropKeys.scaleY] = 1f
                 this[endElementPropKeys.alpha] = 1f
@@ -364,9 +387,7 @@ private sealed class SharedElementTransition(val startElement: PositionedSharedE
                 sequenceOf(startElementPropKeys, endElementPropKeys).flatMap {
                     sequenceOf(it.position, it.scaleX, it.scaleY, it.alpha)
                 }.forEach { key ->
-                    key using tween {
-                        duration = 1000
-                    }
+                    key using tween(durationMillis = 1000)
                 }
             }
         }
@@ -380,7 +401,7 @@ private sealed class SharedElementTransition(val startElement: PositionedSharedE
         }
 
         class SharedElementPropKeys {
-            val position = PxPositionPropKey()
+            val position = OffsetPropKey()
             val scaleX = FloatPropKey()
             val scaleY = FloatPropKey()
             val alpha = FloatPropKey()
