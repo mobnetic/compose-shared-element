@@ -1,4 +1,6 @@
 # compose-shared-element
+Note: **This is not meant to be a maintained library.**
+
 Proof of concept exploration of how to implement SharedElement transition in Jetpack Compose.  
 Inspired by Flutter Hero widget.  
 
